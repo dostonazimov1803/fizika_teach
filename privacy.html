@@ -1,0 +1,227 @@
+package uz.fizika.darslar;
+
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintManager;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+
+import androidx.webkit.WebViewAssetLoader;
+
+public class MainActivity extends Activity {
+
+    private static final String HOST = "appassets.androidplatform.net";
+    private static final String START_URL = "https://" + HOST + "/assets/index.html";
+
+    private FrameLayout root;
+    private WebView web;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customCallback;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.parseColor("#13336B"));
+        web = new WebView(this);
+        web.setBackgroundColor(Color.parseColor("#F3F5F9"));
+        root.addView(web, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+        applyInsets();
+
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        s.setTextZoom(100);
+        s.setSupportMultipleWindows(false);
+
+        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                .setDomain(HOST)
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return loader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri u = request.getUrl();
+                if (HOST.equals(u.getHost())) return false;
+                openExternal(u);
+                return true;
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) { callback.onCustomViewHidden(); return; }
+                customView = view;
+                customCallback = callback;
+                root.addView(view, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                web.setVisibility(View.GONE);
+                setImmersive(true);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (customView == null) return;
+                root.removeView(customView);
+                customView = null;
+                web.setVisibility(View.VISIBLE);
+                setImmersive(false);
+                if (customCallback != null) customCallback.onCustomViewHidden();
+                customCallback = null;
+            }
+        });
+
+        web.addJavascriptInterface(new Bridge(), "AndroidApp");
+
+        web.loadUrl(START_URL);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
+        }
+    }
+
+    private void applyInsets() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
+            }
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
+                android.graphics.Insets b = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+                if (customView != null) v.setPadding(0, 0, 0, 0);
+                else v.setPadding(b.left, b.top, b.right, b.bottom);
+                return WindowInsets.CONSUMED;
+            });
+        }
+    }
+
+    private void setImmersive(boolean on) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                if (on) {
+                    c.hide(WindowInsets.Type.systemBars());
+                    c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                } else {
+                    c.show(WindowInsets.Type.systemBars());
+                }
+            }
+            root.requestApplyInsets();
+        } else {
+            int f = on ? (View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY) : 0;
+            getWindow().getDecorView().setSystemUiVisibility(f);
+        }
+    }
+
+    private void openExternal(Uri u) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, u));
+        } catch (ActivityNotFoundException e) {
+            // brauzer topilmadi
+        }
+    }
+
+    private void doPrint() {
+        PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+        if (pm == null) return;
+        PrintDocumentAdapter a = web.createPrintDocumentAdapter("Fizika darsi");
+        pm.print("Fizika darsi", a, new PrintAttributes.Builder().build());
+    }
+
+    private class Bridge {
+        @JavascriptInterface
+        public void print() {
+            runOnUiThread(MainActivity.this::doPrint);
+        }
+
+        @JavascriptInterface
+        public void openUrl(String url) {
+            runOnUiThread(() -> openExternal(Uri.parse(url)));
+        }
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            handleBack();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        handleBack();
+    }
+
+    private void handleBack() {
+        if (customView != null) {
+            web.evaluateJavascript("document.fullscreenElement&&document.exitFullscreen()", null);
+            return;
+        }
+        web.evaluateJavascript("window.__androidBack?window.__androidBack():'0'", value -> {
+            if (value == null || !value.contains("1")) {
+                finish();
+            }
+        });
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        web.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        web.onResume();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (web != null) {
+            web.destroy();
+        }
+        super.onDestroy();
+    }
+}
